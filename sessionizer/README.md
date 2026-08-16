@@ -17,6 +17,22 @@ It scans one or more directories, lists their direct child directories, lets you
 cargo run -- ~/workspace/repositories ~/workspace/other-projects
 ```
 
+Or put defaults in `~/.config/sessionizer/config.toml`.
+
+## Example config
+
+```toml
+# ~/.config/sessionizer/config.toml
+wtp = true
+paths = [
+  "~/workspace/repositories",
+  "~/workspace/other-projects",
+]
+```
+
+CLI paths override configured paths when provided.
+Debug builds read `./config.toml` instead.
+
 Useful flags:
 
 - `--wtp`: if a project contains `.wtp.yml`, list its `wtp` worktrees instead of the project directory.
