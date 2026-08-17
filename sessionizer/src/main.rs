@@ -14,10 +14,20 @@ struct ProjectPath {
     basename: String,
 }
 
-#[derive(Default)]
 struct Config {
     paths: Vec<String>,
     wtp: bool,
+    git_worktree: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            wtp: false,
+            git_worktree: true,
+        }
+    }
 }
 
 const DELIMITER: &str = " ";
@@ -67,6 +77,8 @@ fn main() {
     let config = read_config();
 
     let enabled_wtp = config.wtp || args.contains(&"--wtp".to_owned());
+    let enabled_git_worktree =
+        config.git_worktree && !args.contains(&"--no-git-worktree".to_owned());
     let disabled_fzf = args.contains(&"--no-fzf".to_owned());
     let disabled_tmux = args.contains(&"--no-tmux".to_owned());
 
@@ -84,6 +96,7 @@ fn main() {
             &arg_paths
         },
         enabled_wtp,
+        enabled_git_worktree,
     );
 
     if disabled_fzf {
@@ -95,6 +108,11 @@ fn main() {
     if disabled_tmux {
         println!("{}", selected);
         exit(0);
+    }
+
+    // when command has been canceld
+    if selected.is_empty() {
+        return;
     }
 
     let selected: Vec<&str> = selected.split(DELIMITER).collect();
@@ -153,6 +171,12 @@ fn parse_config(config: &str) -> Result<Config, String> {
                 "true" => true,
                 "false" => false,
                 _ => return Err("wtp must be true or false".to_string()),
+            };
+        } else if key == "git_worktree" {
+            parsed.git_worktree = match value.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return Err("git_worktree must be true or false".to_string()),
             };
         }
     }
@@ -216,7 +240,7 @@ fn expand_home(path: &str) -> String {
 }
 
 /// Parse the paths and check for worktrees with 'wtp'.
-fn parse_paths(args: &[String], enabled_wtp: bool) -> Vec<ProjectPath> {
+fn parse_paths(args: &[String], enabled_wtp: bool, enabled_git_worktree: bool) -> Vec<ProjectPath> {
     let mut paths: Vec<ProjectPath> = Vec::new();
 
     args.into_iter()
@@ -243,11 +267,74 @@ fn parse_paths(args: &[String], enabled_wtp: bool) -> Vec<ProjectPath> {
                     p.pop();
                 }
 
+                if enabled_git_worktree {
+                    p.push(".git");
+                    let has_git = p.exists();
+                    p.pop();
+                    p.push(".bare");
+                    let has_bare = p.exists();
+                    p.pop();
+                    if has_git || has_bare {
+                        if request_git_worktree_list(&p, &mut paths) {
+                            continue;
+                        }
+                    }
+                }
+
                 paths.push(ProjectPath::new(p));
             }
         });
 
     paths
+}
+
+fn request_git_worktree_list(path: &PathBuf, paths: &mut Vec<ProjectPath>) -> bool {
+    let c = Command::new("git")
+        .args(["worktree", "list"])
+        .current_dir(path.as_path())
+        .output()
+        .expect("Failed calling git worktree list");
+
+    if !c.status.success() {
+        return false;
+    }
+
+    let worktrees = parse_git_worktree_list(&String::from_utf8_lossy(&c.stdout));
+    let found = !worktrees.is_empty();
+    worktrees
+        .into_iter()
+        .for_each(|p| paths.push(ProjectPath::from_string(p).icon("🌳")));
+    found
+}
+
+fn parse_git_worktree_list(output: &str) -> Vec<String> {
+    let entries: Vec<(&str, bool)> = output
+        .lines()
+        .filter_map(|l| {
+            l.split_once(' ')
+                .map(|(path, _)| (path, l.contains("(bare)")))
+        })
+        .collect();
+
+    if matches!(entries.as_slice(), [(_, false)]) {
+        return Vec::new();
+    }
+
+    entries
+        .into_iter()
+        .map(|(path, bare)| {
+            if bare {
+                PathBuf::from(path)
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(path))
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                path.to_string()
+            }
+        })
+        .collect()
 }
 
 fn request_wtp_list(path: &mut PathBuf, paths: &mut Vec<ProjectPath>) {
@@ -259,18 +346,26 @@ fn request_wtp_list(path: &mut PathBuf, paths: &mut Vec<ProjectPath>) {
 
     let basename = ProjectPath::basename_from_pathbuf(path.clone());
 
-    path.push("worktrees");
-
-    String::from_utf8(c.stdout)
-        .unwrap()
-        .lines()
-        .skip(2)
-        .map(|l| l.split_once(' ').unwrap().0)
-        .for_each(|l| {
-            let mut tree = path.clone();
-            tree.push(l);
+    parse_wtp_list(&String::from_utf8_lossy(&c.stdout), path)
+        .into_iter()
+        .for_each(|tree| {
             paths.push(ProjectPath::new(tree).basename(basename.clone()).icon("🌳"));
         });
+}
+
+fn parse_wtp_list(output: &str, root: &PathBuf) -> Vec<PathBuf> {
+    output
+        .lines()
+        .skip(2)
+        .filter_map(|l| l.split_once(' ').map(|(name, _)| name.replace('@', "")))
+        .map(|name| {
+            if name.is_empty() {
+                root.clone()
+            } else {
+                root.join("worktrees").join(name)
+            }
+        })
+        .collect()
 }
 
 fn open_in_fzf(paths: Vec<ProjectPath>) -> String {
@@ -358,6 +453,7 @@ mod tests {
         let config = parse_config(
             r#"
                 wtp = true
+                git_worktree = true
                 paths = [
                     "/tmp/projects", # comment
                     "/tmp/other#project",
@@ -367,6 +463,55 @@ mod tests {
         .unwrap();
 
         assert!(config.wtp);
+        assert!(config.git_worktree);
         assert_eq!(config.paths, ["/tmp/projects", "/tmp/other#project"]);
+    }
+
+    #[test]
+    fn defaults_git_worktree_on() {
+        assert!(Config::default().git_worktree);
+    }
+
+    #[test]
+    fn parses_git_worktree_list() {
+        assert_eq!(
+            parse_git_worktree_list(
+                "/tmp/repo       abc1234 [main]\n/tmp/repo-foo   def5678 [foo]\n"
+            ),
+            ["/tmp/repo", "/tmp/repo-foo"]
+        );
+    }
+
+    #[test]
+    fn ignores_single_plain_git_worktree_entry() {
+        assert!(parse_git_worktree_list("/tmp/repo       abc1234 [main]\n").is_empty());
+    }
+
+    #[test]
+    fn parses_bare_git_worktree_as_project_root() {
+        assert_eq!(
+            parse_git_worktree_list(
+                "/tmp/repo/.bare                  (bare)\n/tmp/repo/worktrees/foo   abc1234 [foo]\n"
+            ),
+            ["/tmp/repo", "/tmp/repo/worktrees/foo"]
+        );
+        assert_eq!(
+            parse_git_worktree_list("/tmp/repo/.bare                  (bare)\n"),
+            ["/tmp/repo"]
+        );
+    }
+
+    #[test]
+    fn parses_wtp_at_as_project_root() {
+        assert_eq!(
+            parse_wtp_list(
+                "header\nheader\n@ active\n@foo active\n",
+                &PathBuf::from("/tmp/repo")
+            ),
+            [
+                PathBuf::from("/tmp/repo"),
+                PathBuf::from("/tmp/repo/worktrees/foo")
+            ]
+        );
     }
 }

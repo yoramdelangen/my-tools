@@ -9,7 +9,7 @@ It scans one or more directories, lists their direct child directories, lets you
 - Rust
 - `fzf`
 - `tmux`
-- Optional: `wtp` for worktree project support
+- Optional: `wtp` or `git` for worktree project support
 
 ## Usage
 
@@ -36,8 +36,12 @@ Debug builds read `./config.toml` instead.
 Useful flags:
 
 - `--wtp`: if a project contains `.wtp.yml`, list its `wtp` worktrees instead of the project directory.
+- Git worktrees are enabled by default: if a project contains `.git`, list `git worktree list` paths instead of the project directory.
+- `--no-git-worktree`: disable Git worktree discovery.
 - `--no-fzf`: print discovered project paths and exit.
 - `--no-tmux`: print the selected project path instead of opening `tmux`.
+
+Set `git_worktree = false` in config to disable Git worktree discovery by default.
 
 ## Install
 
