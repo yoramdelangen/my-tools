@@ -7,7 +7,9 @@ use std::{
     process::{Command, Stdio, exit},
 };
 
+#[derive(Debug)]
 struct ProjectPath {
+    icon: Option<String>,
     path: PathBuf,
     basename: String,
 }
@@ -18,16 +20,31 @@ struct Config {
     wtp: bool,
 }
 
+const DELIMITER: &str = " ";
+
 impl ProjectPath {
     pub fn new(path: PathBuf) -> Self {
-        let basename = path
-            .clone()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let basename = Self::basename_from_pathbuf(path.clone());
 
-        Self { path, basename }
+        Self {
+            path,
+            basename,
+            icon: None,
+        }
+    }
+
+    pub fn basename_from_pathbuf(path: PathBuf) -> String {
+        path.file_name().unwrap().to_string_lossy().to_string()
+    }
+
+    pub fn basename(mut self, basename: String) -> Self {
+        self.basename = basename;
+        self
+    }
+
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
     }
 
     pub fn path_to_string(&self) -> String {
@@ -59,6 +76,7 @@ fn main() {
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .collect();
+
     let paths = parse_paths(
         if arg_paths.is_empty() {
             &config.paths
@@ -79,7 +97,11 @@ fn main() {
         exit(0);
     }
 
-    open_in_tmux(ProjectPath::from_string(selected));
+    let selected: Vec<&str> = selected.split(DELIMITER).collect();
+    let basename = selected[1].to_owned();
+    let path = selected[2].to_owned();
+
+    open_in_tmux(ProjectPath::from_string(path).basename(basename));
 }
 
 fn read_config() -> Config {
@@ -235,6 +257,8 @@ fn request_wtp_list(path: &mut PathBuf, paths: &mut Vec<ProjectPath>) {
         .output()
         .expect("Failed calling WTP command");
 
+    let basename = ProjectPath::basename_from_pathbuf(path.clone());
+
     path.push("worktrees");
 
     String::from_utf8(c.stdout)
@@ -245,12 +269,16 @@ fn request_wtp_list(path: &mut PathBuf, paths: &mut Vec<ProjectPath>) {
         .for_each(|l| {
             let mut tree = path.clone();
             tree.push(l);
-            paths.push(ProjectPath::new(tree));
+            paths.push(ProjectPath::new(tree).basename(basename.clone()).icon("🌳"));
         });
 }
 
 fn open_in_fzf(paths: Vec<ProjectPath>) -> String {
     let mut cmd = Command::new("fzf")
+        .args([
+            format!("{}{}", "--delimiter=", DELIMITER).as_str(),
+            "--with-nth=1,3",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -260,7 +288,22 @@ fn open_in_fzf(paths: Vec<ProjectPath>) -> String {
     cmd.stdin
         .as_mut()
         .unwrap()
-        .write_all(paths.join("\n").as_bytes())
+        .write_all(
+            paths
+                .iter()
+                .map(|p| {
+                    [
+                        p.icon.clone().unwrap_or("\u{00A0}\u{00A0}".to_string()),
+                        p.basename.clone(),
+                        p.path_to_string(),
+                    ]
+                    .join(DELIMITER)
+                    .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .as_bytes(),
+        )
         .unwrap();
     let output = cmd.wait_with_output().unwrap();
 
@@ -277,15 +320,7 @@ fn open_in_tmux(project: ProjectPath) {
 
     if !in_tmux {
         let _ = Command::new("tmux")
-            .args([
-                "new-session",
-                "-A",
-                "-D",
-                "-s",
-                &project.path_to_string(),
-                "-c",
-                session_path,
-            ])
+            .args(["new-session", "-A", "-D", "-s", session, "-c", session_path])
             .status();
         return;
     }
@@ -294,6 +329,8 @@ fn open_in_tmux(project: ProjectPath) {
         .args(["has-session", "-t", session])
         .status()
         .unwrap();
+
+    println!("status {:?}", status);
 
     // Already exists
     if status.success() {
