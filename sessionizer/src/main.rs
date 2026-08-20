@@ -7,27 +7,15 @@ use std::{
     process::{Command, Stdio, exit},
 };
 
+mod config;
+
+use config::{publish_config, read_config};
+
 #[derive(Debug)]
 struct ProjectPath {
     icon: Option<String>,
     path: PathBuf,
     basename: String,
-}
-
-struct Config {
-    paths: Vec<String>,
-    wtp: bool,
-    git_worktree: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            paths: Vec::new(),
-            wtp: false,
-            git_worktree: true,
-        }
-    }
 }
 
 const DELIMITER: &str = " ";
@@ -74,6 +62,12 @@ impl Borrow<str> for ProjectPath {
 
 fn main() {
     let args: Vec<String> = args().collect();
+
+    if args.get(1).map(String::as_str) == Some("publish-config") {
+        publish_config(args.contains(&"--overwrite".to_owned()));
+        return;
+    }
+
     let config = read_config();
 
     let enabled_wtp = config.wtp || args.contains(&"--wtp".to_owned());
@@ -105,138 +99,23 @@ fn main() {
     }
 
     let selected = open_in_fzf(paths);
-    if disabled_tmux {
-        println!("{}", selected);
-        exit(0);
-    }
-
     // when command has been canceld
     if selected.is_empty() {
         return;
     }
 
-    let selected: Vec<&str> = selected.split(DELIMITER).collect();
+    let mut selected: Vec<&str> = selected.split(DELIMITER).collect();
+    selected.reverse();
+
     let basename = selected[1].to_owned();
-    let path = selected[2].to_owned();
+    let path = selected[0].to_owned();
+
+    if disabled_tmux {
+        println!("PATH={} BASENAME={}", path, basename);
+        exit(0);
+    }
 
     open_in_tmux(ProjectPath::from_string(path).basename(basename));
-}
-
-fn read_config() -> Config {
-    #[cfg(debug_assertions)]
-    let path = PathBuf::from("config.toml");
-
-    #[cfg(not(debug_assertions))]
-    let path = {
-        let Some(home) = env::var_os("HOME") else {
-            return Config::default();
-        };
-        PathBuf::from(home).join(".config/sessionizer/config.toml")
-    };
-
-    match fs::read_to_string(&path) {
-        Ok(config) => parse_config(&config).unwrap_or_else(|e| panic!("{}: {}", path.display(), e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => panic!("{}: {}", path.display(), e),
-    }
-}
-
-fn parse_config(config: &str) -> Result<Config, String> {
-    let mut parsed = Config::default();
-    let mut lines = config.lines();
-
-    while let Some(line) = lines.next() {
-        let line = strip_comment(line).trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("invalid line: {line}"));
-        };
-        let key = key.trim();
-        let mut value = value.trim().to_string();
-
-        if key == "paths" {
-            while !value.contains(']') {
-                let Some(next) = lines.next() else {
-                    return Err("unterminated paths array".to_string());
-                };
-                value.push('\n');
-                value.push_str(strip_comment(next).trim());
-            }
-            parsed.paths = parse_string_array(&value)?;
-        } else if key == "wtp" {
-            parsed.wtp = match value.as_str() {
-                "true" => true,
-                "false" => false,
-                _ => return Err("wtp must be true or false".to_string()),
-            };
-        } else if key == "git_worktree" {
-            parsed.git_worktree = match value.as_str() {
-                "true" => true,
-                "false" => false,
-                _ => return Err("git_worktree must be true or false".to_string()),
-            };
-        }
-    }
-
-    Ok(parsed)
-}
-
-fn strip_comment(line: &str) -> String {
-    let mut quoted = false;
-
-    for (i, c) in line.char_indices() {
-        if c == '"' {
-            quoted = !quoted;
-        } else if c == '#' && !quoted {
-            return line[..i].to_string();
-        }
-    }
-
-    line.to_string()
-}
-
-fn parse_string_array(value: &str) -> Result<Vec<String>, String> {
-    let value = value.trim();
-    if !value.starts_with('[') || !value.ends_with(']') {
-        return Err("paths must be an array of strings".to_string());
-    }
-
-    let mut paths = Vec::new();
-    let mut quoted = false;
-    let mut current = String::new();
-
-    for c in value[1..value.len() - 1].chars() {
-        if c == '"' {
-            if quoted {
-                paths.push(expand_home(&current));
-                current.clear();
-            }
-            quoted = !quoted;
-        } else if quoted {
-            current.push(c);
-        } else if !c.is_whitespace() && c != ',' {
-            return Err("paths must contain only strings".to_string());
-        }
-    }
-
-    if quoted {
-        return Err("unterminated string in paths".to_string());
-    }
-
-    Ok(paths)
-}
-
-fn expand_home(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-
-    path.to_string()
 }
 
 /// Parse the paths and check for worktrees with 'wtp'.
@@ -447,30 +326,6 @@ fn open_in_tmux(project: ProjectPath) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_minimal_config() {
-        let config = parse_config(
-            r#"
-                wtp = true
-                git_worktree = true
-                paths = [
-                    "/tmp/projects", # comment
-                    "/tmp/other#project",
-                ]
-            "#,
-        )
-        .unwrap();
-
-        assert!(config.wtp);
-        assert!(config.git_worktree);
-        assert_eq!(config.paths, ["/tmp/projects", "/tmp/other#project"]);
-    }
-
-    #[test]
-    fn defaults_git_worktree_on() {
-        assert!(Config::default().git_worktree);
-    }
 
     #[test]
     fn parses_git_worktree_list() {
