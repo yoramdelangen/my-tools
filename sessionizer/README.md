@@ -2,6 +2,8 @@
 
 Rust CLI for selecting a project with `fzf` and opening it in `tmux`.
 
+![Sessionizer usage](assets/usage.png)
+
 It scans one or more directories, lists their direct child directories, lets you choose one with `fzf`, then switches to or creates a matching `tmux` session.
 
 ## Requirements
@@ -18,6 +20,13 @@ cargo run -- ~/workspace/repositories ~/workspace/other-projects
 ```
 
 Or put defaults in `~/.config/sessionizer/config.toml`.
+
+Create a default config:
+
+```sh
+sessionizer publish-config
+sessionizer publish-config --overwrite
+```
 
 ## Example config
 

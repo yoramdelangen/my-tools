@@ -15,7 +15,7 @@ use config::{publish_config, read_config};
 struct ProjectPath {
     icon: Option<String>,
     path: PathBuf,
-    basename: String,
+    session_name: String,
 }
 
 const DELIMITER: &str = " ";
@@ -26,7 +26,7 @@ impl ProjectPath {
 
         Self {
             path,
-            basename,
+            session_name: basename,
             icon: None,
         }
     }
@@ -35,8 +35,8 @@ impl ProjectPath {
         path.file_name().unwrap().to_string_lossy().to_string()
     }
 
-    pub fn basename(mut self, basename: String) -> Self {
-        self.basename = basename;
+    pub fn session_name(mut self, session_name: String) -> Self {
+        self.session_name = session_name;
         self
     }
 
@@ -107,15 +107,15 @@ fn main() {
     let mut selected: Vec<&str> = selected.split(DELIMITER).collect();
     selected.reverse();
 
-    let basename = selected[1].to_owned();
+    let session_name = selected[1].to_owned();
     let path = selected[0].to_owned();
 
     if disabled_tmux {
-        println!("PATH={} BASENAME={}", path, basename);
+        println!("PATH={} SESSION={}", path, session_name);
         exit(0);
     }
 
-    open_in_tmux(ProjectPath::from_string(path).basename(basename));
+    open_in_tmux(ProjectPath::from_string(path).session_name(session_name));
 }
 
 /// Parse the paths and check for worktrees with 'wtp'.
@@ -228,7 +228,11 @@ fn request_wtp_list(path: &mut PathBuf, paths: &mut Vec<ProjectPath>) {
     parse_wtp_list(&String::from_utf8_lossy(&c.stdout), path)
         .into_iter()
         .for_each(|tree| {
-            paths.push(ProjectPath::new(tree).basename(basename.clone()).icon("🌳"));
+            paths.push(
+                ProjectPath::new(tree)
+                    .session_name(basename.clone())
+                    .icon("🌳"),
+            );
         });
 }
 
@@ -268,7 +272,7 @@ fn open_in_fzf(paths: Vec<ProjectPath>) -> String {
                 .map(|p| {
                     [
                         p.icon.clone().unwrap_or("\u{00A0}\u{00A0}".to_string()),
-                        p.basename.clone(),
+                        p.session_name.clone(),
                         p.path_to_string(),
                     ]
                     .join(DELIMITER)
@@ -287,17 +291,10 @@ fn open_in_fzf(paths: Vec<ProjectPath>) -> String {
 /// After listing sessions check if there is already a session open.
 /// otherwise we startup a new session.
 fn open_in_tmux(project: ProjectPath) {
-    let session = &project.basename;
+    let session = &project.session_name;
     let session_path = &project.path_to_string();
 
-    let in_tmux = env::var("TMUX").is_ok();
-
-    if !in_tmux {
-        let _ = Command::new("tmux")
-            .args(["new-session", "-A", "-D", "-s", session, "-c", session_path])
-            .status();
-        return;
-    }
+    let in_tmux = env::var_os("TMUX").is_some();
 
     let status = Command::new("tmux")
         .args(["has-session", "-t", session])
@@ -306,21 +303,22 @@ fn open_in_tmux(project: ProjectPath) {
 
     println!("status {:?}", status);
 
-    // Already exists
-    if status.success() {
+    if !status.success() {
+        let _ = Command::new("tmux")
+            .args(["new-session", "-d", "-s", session, "-c", session_path])
+            .status();
+    }
+
+    if in_tmux {
         let _ = Command::new("tmux")
             .args(["switch-client", "-t", session])
-            .output();
+            .status();
         return;
     }
 
     let _ = Command::new("tmux")
-        .args(["new-session", "-D", "-s", session, "-c", session_path])
-        .output();
-
-    let _ = Command::new("tmux")
-        .args(["switch-client", "-t", session])
-        .output();
+        .args(["attach-session", "-t", session])
+        .status();
 }
 
 #[cfg(test)]
